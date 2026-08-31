@@ -1,0 +1,805 @@
+%=====================================================================
+% A Multi-Agent Generative AI System for Scientific Literature Analysis
+% IEEE Conference (IEEEtran v1.8b, conference mode)
+% Compile: pdfLaTeX  (references are inline -> single pass sufficient)
+%=====================================================================
+\documentclass[conference]{IEEEtran}
+%\IEEEoverridecommandlockouts % (only needed when using \thanks overrides)
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric,arrows.meta,positioning,fit,backgrounds}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.17}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash\hspace{0pt}}p{#1}}
+
+\begin{document}
+
+\title{A Multi-Agent Generative AI System for\\Scientific Literature Analysis}
+
+\author{\IEEEauthorblockN{Adishree Gupta, Uma D, Madhav Jayam, Sai Roshini Kolla}
+\IEEEauthorblockA{\textit{Department of Computer Science and Engineering} \\
+\textit{PES University}\\
+Bengaluru, India}
+}
+
+\maketitle
+
+\begin{abstract}
+The rapid growth of scientific publications has made manual literature
+synthesis increasingly impractical. General-purpose large language models
+can generate fluent summaries but are constrained to parametric knowledge
+frozen at training time and frequently produce hallucinated citations. We
+present a multi-agent generative AI system that addresses these shortcomings
+through retrieval-grounded, structured analysis. Given a natural language
+query, the pipeline retrieves 300--800 paper abstracts from live scholarly
+databases, encodes them with Sentence-BERT, constructs a cosine-similarity
+graph, and partitions documents into thematic clusters. A five-agent ensemble
+then processes the clusters concurrently, extracting claims, mapping evidence
+spans, scoring study reliability, detecting cross-paper agreement and
+contradiction, and ranking unresolved questions by uncertainty. Experiments on
+a curated benchmark demonstrate that the proposed system achieves 92.7\%
+accuracy and an F1 score of 89.8\%, outperforming a standalone LLM by 14.2
+points and a RAG baseline by 6.8 points in F1. An ablation study confirms that
+both the graph clustering step and the multi-agent decomposition contribute
+independently to the overall performance, validating the effectiveness of
+structured multi-agent reasoning over traditional LLM-based approaches.
+\end{abstract}
+
+\begin{IEEEkeywords}
+multi-agent systems, retrieval-augmented generation, large language models,
+graph clustering, scientific literature analysis
+\end{IEEEkeywords}
+
+%=====================================================================
+\section{Introduction}
+Scientific publishing accelerates every year. Across biomedicine, computer
+science, and engineering, tens of thousands of new articles appear monthly,
+and the pace shows no sign of slowing. A researcher trying to understand what
+a field currently knows must read, compare, and synthesise a large body of
+work, a task that can take weeks even for experienced practitioners. Tools
+that automate this synthesis reduce the time from query to insight and lower
+the barrier for researchers entering new subfields.
+
+Large language models (LLMs) appear to offer a natural solution. Trained on
+corpora that include scientific text, they produce coherent summaries and
+answer domain-specific questions without specialised retrieval machinery. The
+fundamental limitation is that their knowledge is static: a model trained
+before a study was published cannot incorporate its findings, and when pressed
+for citations it will sometimes generate references that look plausible but do
+not exist. This hallucination problem is particularly harmful in scientific
+contexts where reproducibility and traceability are expected.
+
+Retrieval-augmented generation (RAG) alleviates staleness by fetching
+documents at query time and conditioning the response on retrieved content.
+However, conventional RAG pipelines treat retrieved documents as an
+undifferentiated pool. They produce a single blended answer without tracking
+which papers agree, which contradict each other, how methodologically sound
+each source is, or what questions the literature leaves open. For a scientist,
+those distinctions are often more informative than the aggregate answer
+itself.
+
+The present work introduces a pipeline that goes substantially beyond flat
+RAG. After retrieval, a similarity graph is constructed over the document
+embeddings and partitioned into thematic clusters so that downstream agents
+deal with coherent, noise-reduced subsets of the literature. Five specialised
+agents then process each cluster: one extracts claims, a second maps evidence,
+a third evaluates study reliability, a fourth compares findings across papers,
+and a fifth ranks unresolved questions. The agents run concurrently, and their
+outputs are aggregated into a structured report that distinguishes consensus
+from controversy. Unlike prior systems, the proposed framework jointly models
+thematic structure via graph clustering and epistemic reasoning via agent
+decomposition, enabling explicit separation of consensus, conflict, and
+uncertainty. This joint modelling is not addressed in existing RAG pipelines
+and constitutes the primary architectural novelty of this work.
+
+The main contributions are: (1) a graph-based clustering step that organises
+retrieved papers into thematic groups before agent processing; (2) a
+five-agent decomposition grounded in the cognitive steps of scientific
+literature review; (3) a composite claim-evidence scoring function
+$\mathrm{Score}(c,e) = \alpha \cdot \mathrm{sim}(c,e) + \beta \cdot
+\mathrm{rel}(e)$ that weights evidence by both topical alignment and source
+reliability; and (4) quantitative evaluation including an ablation study that
+isolates each component's contribution.
+
+%=====================================================================
+\section{Related Work}
+
+\subsection{Retrieval-Augmented Generation}
+The RAG framework couples a retriever with a generative model so that
+responses are conditioned on documents fetched at inference time rather than
+purely on parametric memory~\cite{lewis2020rag}. Subsequent work has explored
+dense passage retrieval, iterative retrieval loops that issue multiple
+queries, and hybrid sparse-dense indexing strategies~\cite{zhao2024ragsurvey}.
+Agentic RAG extends the pipeline further with autonomous agents that plan,
+select tools, and collaborate~\cite{singh2025agenticrag}. All of these systems
+route retrieved documents either to a single generation model or to
+task-agnostic agents. Our work differs by delegating post-retrieval reasoning
+to a five-agent ensemble, each with a scoped epistemic function, operating
+over pre-clustered evidence.
+
+\subsection{Scientific Text Representation}
+Domain-adapted encoders such as SciBERT~\cite{beltagy2019scibert} and
+SPECTER~\cite{cohan2020specter} have demonstrated that fine-tuning on
+scientific corpora produces document representations that capture
+research-level concepts better than general-purpose encoders. SPECTER
+additionally incorporates citation graph structure, bringing bibliographic
+relationships into the embedding space. Our system adopts
+Sentence-BERT~\cite{reimers2019sbert} for its efficiency on sentence-level
+tasks and uses the resulting embeddings both for retrieval similarity and for
+the $\mathrm{sim}(c,e)$ term in Equation~(\ref{eq:score}).
+
+\subsection{Graph-Based Document Clustering}
+Building a $k$-nearest-neighbour graph over document embeddings and applying
+the Louvain community detection algorithm~\cite{blondel2008louvain} yields
+compact, interpretable topic clusters without requiring the number of topics
+to be specified in advance. This property is important for literature queries
+whose thematic breadth varies with the query. Spectral clustering provides an
+alternative when the graph is sparse or when a fixed number of clusters can be
+estimated from data. We use both methods and select between them based on
+silhouette score.
+
+\subsection{Multi-Agent LLM Frameworks}
+Coordinating multiple specialised LLM agents has been explored for software
+engineering, multi-hop question answering, and collaborative
+writing~\cite{park2023generative},~\cite{guo2024survey}. General-purpose
+orchestration frameworks such as AutoGen~\cite{wu2023autogen} and
+CrewAI~\cite{moura2024crewai} supply the coordination
+substrate---conversational message passing and role-based task delegation
+respectively---but leave corpus structuring and evidence semantics to the
+application. Closest in spirit is multi-agent debate for hallucination
+detection~\cite{sun2025debate}, which verifies individual claims through
+structured agent interaction; our Agent~4 instead labels claim pairs across
+papers, so that disagreement is reported rather than resolved.
+
+In scientific computing, agent-based designs have been applied to end-to-end
+discovery: Robin~\cite{ghareeb2026robin} couples literature-search agents with
+data-analysis agents to generate hypotheses, propose experiments, and
+interpret results, showing that role-specialised agents extend to complete
+research workflows. A complementary line treats the design itself as a search
+problem---MASS~\cite{zhou2026mass} jointly optimises agent prompts and team
+topology---whereas our topology is fixed a priori by the epistemics of
+literature review rather than searched. Work on large-scale agent
+infrastructure has likewise identified consensus and conflict-resolution
+mechanisms as core operational enablers for heterogeneous agent
+populations~\cite{wang2026ioa}, which is precisely the function Agent~4
+performs within a cluster.
+
+A recent survey of orchestration frameworks~\cite{zhu2026orchestration}
+compares AutoGen, CrewAI, and related systems on state management, cost
+structure, and failure recovery; Table~\ref{tab:positioning} adopts that
+framing and positions the proposed system along the axes relevant to
+literature analysis. The specific five-agent decomposition proposed here,
+structured around the epistemics of scientific evaluation, is novel and is a
+primary contribution of this work.
+
+\begin{table}[!t]
+\caption{Positioning Against General Multi-Agent Frameworks}
+\label{tab:positioning}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}L{1.10cm}L{1.90cm}L{1.90cm}L{2.45cm}@{}}
+\toprule
+\textbf{Aspect} & \textbf{AutoGen~\cite{wu2023autogen}} &
+\textbf{CrewAI~\cite{moura2024crewai}} & \textbf{Proposed} \\
+\midrule
+Scope & General orchestration & General orchestration & Literature analysis \\
+Coordination & Conversational message passing & Role-based task delegation &
+Fixed 5-role ensemble, concurrent \\
+Retrieval & Application-supplied tools & Application-supplied tools &
+Built-in scholarly APIs \\
+Corpus structuring & Application-defined & Application-defined &
+Similarity graph + Louvain \\
+Evidence model & Application-defined & Application-defined &
+Scored claim--evidence pairs (\ref{eq:score}) \\
+Disagreement & Application-defined & Application-defined &
+Explicit pairwise labels + $U_k$ (\ref{eq:uncertainty}) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%=====================================================================
+\section{System Architecture}
+The pipeline comprises seven sequential stages, depicted in
+Fig.~\ref{fig:arch}. A natural language query enters the system, is
+pre-processed and embedded, triggers a paper retrieval step, feeds a
+similarity graph and clustering module, passes through the five-agent
+ensemble, and finally produces a ranked structured report.
+
+\subsection{Embedding Module}
+Paper abstracts and the user query are encoded by Sentence-BERT producing
+768-dimensional vectors. Using the same encoder for both ensures that semantic
+proximity in the embedding space reflects topical relevance rather than
+surface lexical overlap.
+
+\subsection{Retrieval Module}
+The retrieval module issues structured queries to arXiv, PubMed, and Semantic
+Scholar APIs. Between 300 and 800 abstracts are collected per query, depending
+on the topic. Records are deduplicated by DOI and title, then normalised
+through lower-casing, stopword removal, and tokenisation before embedding.
+Citation count and publication year are retained alongside each embedding.
+
+\subsection{Graph and Clustering Module}
+An edge-weighted similarity graph is built over the embedded documents.
+Community detection partitions the graph into 3--6 thematic clusters. Each
+cluster is forwarded to the agent layer as a coherent document set.
+
+\subsection{Agent and Aggregation Modules}
+The five agents run asynchronously against a hosted instruction-tuned LLM.
+Because the agents are independent given a cluster, the layer is
+embarrassingly parallel and its wall-clock cost is bounded by the slowest
+agent rather than by the sum of five calls. Their structured JSON outputs are
+collected, merged, and ranked before presentation to the user.
+
+%----------------------------- Figure 1 ------------------------------
+\begin{figure}[!t]
+\centering
+\begin{tikzpicture}[
+  font=\scriptsize,
+  node distance=4.2mm,
+  stage/.style={draw, rounded corners=2pt, fill=blue!6, minimum width=20mm,
+                minimum height=6.2mm, align=center, inner sep=2pt},
+  agent/.style={draw, rounded corners=2pt, fill=orange!10, minimum width=22mm,
+                minimum height=6.2mm, align=center, inner sep=2pt},
+  ar/.style={-{Latex[length=1.6mm]}, thin}
+]
+% left column: sequential pipeline
+\node[stage] (q)    {User Query};
+\node[stage, below=of q]  (pre)  {Query\\Preprocessing};
+\node[stage, below=of pre] (emb) {Semantic\\Embedding};
+\node[stage, below=of emb] (ret) {Paper Retrieval};
+\node[stage, below=of ret] (sim) {Similarity Graph};
+\node[stage, below=of sim] (clu) {Graph\\Clustering};
+\node[stage, below=of clu, fill=blue!14] (mas) {Multi-Agent\\Analysis};
+\node[stage, below=of mas] (res) {Ranked Results};
+
+\foreach \a/\b in {q/pre, pre/emb, emb/ret, ret/sim, sim/clu, clu/mas, mas/res}
+  \draw[ar] (\a) -- (\b);
+
+% right column: concurrent agents
+\node[agent, right=13mm of pre]  (a1) {Agent 1: Claim\\Extraction};
+\node[agent, below=of a1] (a2) {Agent 2: Evidence\\Collection};
+\node[agent, below=of a2] (a3) {Agent 3: Study\\Reliability};
+\node[agent, below=of a3] (a4) {Agent 4:\\Agreement Detection};
+\node[agent, below=of a4] (a5) {Agent 5:\\Uncertainty Priority};
+
+\begin{scope}[on background layer]
+  \node[draw, dashed, rounded corners=3pt, fill=orange!4,
+        fit=(a1)(a2)(a3)(a4)(a5), inner sep=3mm] (box) {};
+\end{scope}
+\node[above=1mm of box, font=\scriptsize\itshape] {Concurrent agent ensemble};
+
+\draw[ar] (mas.east) -- ++(4mm,0) |- (box.west);
+\draw[ar, dashed] (box.south) |- ([yshift=2mm]res.east);
+\end{tikzpicture}
+\caption{System architecture diagram. The left column shows the sequential
+pipeline stages; the right panel shows the five concurrent agents of the
+multi-agent analysis layer.}
+\label{fig:arch}
+\end{figure}
+
+%=====================================================================
+\section{Experimental Stages}
+The evaluation pipeline follows seven well-defined stages that mirror the
+intended deployment workflow of the system.
+
+\textbf{Stage 1 -- Dataset Preparation.} Between 300 and 800 scientific
+abstracts are collected at runtime from arXiv, PubMed, and Semantic Scholar
+using the query terms. Each record stores the title, abstract text, and
+keyword list. Records with duplicate DOIs or near-identical titles are
+removed. The remaining abstracts pass through tokenisation, stopword removal,
+and Sentence-BERT embedding to produce a vector database of paper
+representations.
+
+\textbf{Stage 2 -- Query Processing.} The user's natural language query is
+converted to a 768-dimensional Sentence-BERT embedding. Cosine similarity
+between the query vector and every paper vector is computed, and the top $k$
+papers (with $k \in [20,30]$) are selected as the working document set. This
+step bounds the context each agent must process.
+
+\textbf{Stage 3 -- Graph Construction.} A similarity graph $G=(V,E)$ is built
+where each paper is a vertex $v \in V$ and an edge $(i,j) \in E$ is added when
+$\mathrm{sim}(d_i,d_j) \geq \tau$, with $\tau = 0.70$ after grid-search
+tuning. Edge weights are set to the cosine similarity value. The resulting
+graph captures fine-grained topical relationships that are invisible in a flat
+ranked list.
+
+\textbf{Stage 4 -- Graph Clustering.} The Louvain algorithm is applied as the
+primary clustering method because it does not require the number of clusters
+to be specified and scales well to the graph sizes produced in Stage~3.
+Spectral clustering is used as a fallback when the graph is sparse. The output
+is 3--6 thematic clusters validated by silhouette score.
+
+\textbf{Stage 5 -- Multi-Agent Processing.} Each cluster is dispatched
+concurrently to the five-agent ensemble. Agent~1 extracts principal scientific
+claims; Agent~2 maps supporting and contradicting evidence spans; Agent~3
+assigns reliability scores to individual studies; Agent~4 compares claims
+across papers within the cluster and labels pairs as consistent,
+contradictory, or orthogonal; Agent~5 ranks unresolved questions by
+uncertainty. Each agent receives a role-specific prompt and returns a
+structured JSON object.
+
+\textbf{Stage 6 -- Claim-Evidence Scoring.} The composite scoring function in
+Equation~(\ref{eq:score}) is applied to every (claim, evidence) pair. Claims
+supported by high-reliability evidence that is also semantically close rise to
+the top of the ranked list. This scoring step reduces the influence of
+evidence from methodologically weak studies even when those studies are
+topically aligned with the claim.
+
+\textbf{Stage 7 -- Final Synthesis.} Agent outputs and claim scores are
+combined into a structured report. The report groups findings into three
+sections: consensus (claims consistently supported across papers), conflicts
+(claims where retrieved papers disagree), and open questions
+(high-uncertainty items ranked by Agent~5). This three-part structure provides
+the user with an immediate view of the state of knowledge.
+
+%=====================================================================
+\section{Methodology}
+
+\subsection{Graph Construction}
+Let $d_i \in \mathbb{R}^{768}$ be the Sentence-BERT embedding of document $i$.
+Pairwise cosine similarity is
+\begin{equation}
+\mathrm{sim}(i,j) = \frac{d_i \cdot d_j}{\lVert d_i \rVert \, \lVert d_j \rVert}.
+\label{eq:cosine}
+\end{equation}
+The graph $G=(V,E)$ includes edge $(i,j)$ when $\mathrm{sim}(i,j) \geq \tau$.
+With $\tau = 0.70$, isolated papers (those below threshold for all others) are
+handled by assigning them to the most similar cluster centroid. The threshold
+trades density against coherence: below it, cross-topic edges merge
+communities and cluster purity falls; above it, the graph fragments and more
+papers require centroid reassignment. Because edge weights carry the
+similarity value rather than a binary indicator, Louvain modularity is
+computed over graded evidence of relatedness. The dominant cost at this stage
+is the pairwise similarity computation, which is quadratic in the working-set
+size; bounding that set at $k \in [20,30]$ in Stage~2 is therefore what keeps
+graph construction inexpensive relative to the LLM calls.
+
+\subsection{Claim Extraction}
+Agent~1 is prompted with a cluster of abstracts and an instruction to list
+every principal claim as a standalone declarative sentence. The output is
+parsed into a structured list with a provenance pointer to the source paper.
+
+\subsection{Evidence Mapping}
+Agent~2 receives the claim list from Agent~1 alongside the source abstracts.
+For each claim it identifies text spans that support or contradict it and
+assigns a polarity label (positive, negative, or neutral). The span, polarity,
+and source paper form a single evidence record.
+
+\subsection{Agreement Detection}
+Agent~4 compares claims from different papers within a cluster. Each claim
+pair receives one of three labels: consistent, contradictory, or orthogonal.
+The fraction of contradictory pairs feeds the uncertainty score in
+Equation~(\ref{eq:uncertainty}).
+
+%=====================================================================
+\section{Mathematical Formulation}
+
+\subsection{Claim-Evidence Score}
+Let reliability score $\mathrm{rel}(e) \in [0,1]$ be derived from citation
+count and methodological quality signals extracted by Agent~3. The composite
+claim-evidence score is
+\begin{equation}
+\mathrm{Score}(c,e) = \alpha \cdot \mathrm{sim}(c,e) + \beta \cdot
+\mathrm{rel}(e), \qquad \alpha + \beta = 1.
+\label{eq:score}
+\end{equation}
+The term $\mathrm{sim}(c,e)$ is the cosine similarity between the embeddings
+of claim $c$ and evidence span $e$, measuring topical alignment. The term
+$\mathrm{rel}(e)$ captures source quality so that evidence from poorly cited
+or methodologically weak studies is down-weighted even when it is topically
+relevant. This combination is a contribution of the present work; standard RAG
+systems rank on retrieval score alone and therefore cannot express this
+trade-off. Parameters are set to $\alpha = 0.6$ and $\beta = 0.4$ by grid
+search on the validation split and held fixed for all reported experiments.
+
+\subsection{Uncertainty Priority Score}
+For unresolved question $k$, the uncertainty score combines the fraction of
+contradictory claim pairs (contention) with the normalised frequency of the
+question across the retrieved papers:
+\begin{equation}
+U_k = \gamma \cdot \mathrm{contention}_k + (1-\gamma) \cdot \mathrm{freq}_k.
+\label{eq:uncertainty}
+\end{equation}
+The two terms separate a question that is contested from one that is merely
+common. Questions with high $U_k$ appear at the top of the open-questions
+section of the output report. We set $\gamma = 0.5$ in all experiments.
+
+%=====================================================================
+\section{Multi-Agent System}
+The structured decomposition of the analysis task across five agents is a
+central novelty of this work. The division of labour mirrors the distinct
+cognitive steps a human reviewer applies when evaluating a body of literature.
+
+\textbf{Agent 1 -- Claim Extraction.} Reads each abstract and produces a list
+of principal scientific claims as standalone declarative sentences. Provenance
+pointers link every claim back to its source paper.
+
+\textbf{Agent 2 -- Evidence Collection.} Given the claims from Agent~1 and the
+original abstracts, this agent locates text spans that support or contradict
+each claim and tags each span with a polarity label and a source reference.
+
+\textbf{Agent 3 -- Study Reliability.} Evaluates methodological quality by
+scanning abstracts for signals such as controlled experimental design,
+reported sample sizes, statistical testing, and replication. The reliability
+score combines normalised citation count and presence of these methodological
+indicators, producing a score in $[0,1]$ per paper used in
+Equation~(\ref{eq:score}).
+
+\textbf{Agent 4 -- Agreement Detection.} Compares claims from different papers
+within a cluster, labels each pair, and produces a natural language summary of
+the overall degree of consensus. The contradiction fraction feeds the
+$\mathrm{contention}_k$ term in Equation~(\ref{eq:uncertainty}).
+
+\textbf{Agent 5 -- Uncertainty Prioritisation.} Uses agreement labels from
+Agent~4 and question frequency to compute $U_k$ for each unresolved question.
+High-$U_k$ questions are surfaced as the primary open research directions.
+
+Separating these five functions prevents any single model pass from having to
+balance claim extraction, source criticism, and contradiction detection
+simultaneously. The objectives interfere: evidence for a claim and scepticism
+about its source pull the same generation in opposite directions. Each agent's
+prompt is therefore shorter, carries a single objective, and is constrained to
+a JSON schema, which is both more reliably followed than a monolithic prompt
+and independently checkable. The decomposition also fixes the interface
+between stages---each agent's input is another agent's typed output or the
+cluster itself---which is what makes per-agent accuracy measurable in
+isolation in Table~\ref{tab:agents}.
+
+%=====================================================================
+\section{Experimental Results}
+
+\subsection{Dataset and Evaluation Protocol}
+Five scientific topics were selected for evaluation: transformer architectures
+for NLP, mRNA vaccine efficacy, CRISPR gene editing, graph neural networks,
+and antibiotic resistance mechanisms. For each topic, 160 abstracts were
+retrieved, giving a total of 800 documents, and each topic set is processed
+end-to-end as an independent query. Two graduate-student annotators
+independently labelled claims, evidence spans, and agreement relationships.
+Inter-annotator agreement was $\kappa = 0.78$ on claim identification and
+$\kappa = 0.71$ on agreement labels. Disagreements were resolved by
+discussion. The hyperparameters $\tau$, $\alpha$, $\beta$, and $\gamma$ were
+fixed on the validation split before evaluation and were not re-tuned per
+topic, so the reported figures reflect a single configuration applied
+uniformly across all five topic sets. The protocol is therefore: fixed
+hyperparameter configuration determined using the validation split
+$\rightarrow$ evaluation on the 800-document benchmark. All results reported
+below were obtained under this single fixed configuration; repeated-run and
+per-topic variance analysis is left to future work. Although evaluation is
+conducted on 800 documents, the retrieval stage can accommodate larger corpora
+while the bounded working set keeps downstream graph construction manageable.
+
+\subsection{Evaluation Metrics}
+Six metrics are reported. Accuracy measures the fraction of system-extracted
+claims matching ground-truth annotations. Precision and Recall are computed
+over the claim set. F1 is their harmonic mean. Latency is the wall-clock time
+in seconds from query submission to final report. Agreement Detection Accuracy
+measures how correctly consistent and contradictory paper pairs are labelled.
+Tables~\ref{tab:main}--\ref{tab:ablation} report aggregates over the full
+800-document benchmark.
+
+\subsection{Main Performance Comparison}
+Table~\ref{tab:main} shows results for three systems. The standalone LLM draws
+on parametric memory only. The single-agent RAG system retrieves the same
+documents but uses one LLM pass. The proposed system applies the full
+pipeline. The proposed system outperforms both baselines on every metric.
+
+\begin{table}[!t]
+\caption{Main Performance Comparison}
+\label{tab:main}
+\centering
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{Method} & \textbf{Acc.} & \textbf{Prec.} & \textbf{Rec.} &
+\textbf{F1} & \textbf{Lat. (s)} \\
+\midrule
+LLM Only & 78.5 & 75.2 & 73.8 & 74.5 & 1.2 \\
+RAG      & 85.9 & 83.6 & 81.7 & 82.6 & 1.8 \\
+Proposed & \textbf{92.7} & \textbf{90.5} & \textbf{89.1} & \textbf{89.8} & 2.3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[!t]
+\caption{Clustering Performance}
+\label{tab:clustering}
+\centering
+\begin{tabular}{@{}lc@{}}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Silhouette Score & 0.71 \\
+Average Clusters per Query & 4 \\
+Cluster Size Range & 3--9 \\
+Intra-cluster Similarity & High ($\geq 0.70$) \\
+Inter-cluster Similarity & Low ($\leq 0.42$) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[!t]
+\caption{Per-Agent Task Accuracy}
+\label{tab:agents}
+\centering
+\begin{tabular}{@{}lc@{}}
+\toprule
+\textbf{Agent} & \textbf{Accuracy (\%)} \\
+\midrule
+Agent 1 -- Claim Extraction    & 91.2 \\
+Agent 2 -- Evidence Mapping    & 89.8 \\
+Agent 3 -- Reliability Scoring & 87.5 \\
+Agent 4 -- Agreement Detection & 88.9 \\
+Agent 5 -- Uncertainty Ranking & 86.7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[!t]
+\caption{Ablation Study}
+\label{tab:ablation}
+\centering
+\begin{tabular}{@{}lc@{}}
+\toprule
+\textbf{Configuration} & \textbf{Accuracy (\%)} \\
+\midrule
+Without Graph Clustering  & 84.3 \\
+Without Multi-Agent Design & 80.1 \\
+Full System & \textbf{92.7} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Accuracy rises from 78.5\% (LLM) and 85.9\% (RAG) to 92.7\%. F1 improves from
+74.5 to 89.8. The comparison against RAG is the informative one, since both
+systems see identical retrieved evidence and differ only in how that evidence
+is organised and reasoned over. The latency increase of roughly one second
+over the RAG baseline is modest and reflects the concurrent agent execution,
+which avoids serial bottlenecks.
+
+\subsection{Clustering Quality}
+Table~\ref{tab:clustering} summarises the graph clustering results. The
+average silhouette score of 0.71 indicates strong intra-cluster coherence,
+meaning that papers within a cluster are substantially more similar to each
+other than to papers in other clusters. Intra-cluster similarity at or above
+0.70 against inter-cluster similarity at or below 0.42 confirms that the
+partition separates distinct topics rather than slicing a single dense region.
+Between 3 and 6 clusters were produced across the five query topics, with an
+average of 4.
+
+\subsection{Agent-Level Accuracy}
+Table~\ref{tab:agents} reports individual agent accuracy measured against
+annotated ground truth for each task. Claim extraction (Agent~1) is the
+highest-performing agent at 91.2\%. Uncertainty ranking (Agent~5) is the most
+challenging at 86.7\%, partly because the ground-truth uncertainty labels
+involve subjective judgement. Accuracy declines broadly along the pipeline,
+which is consistent with error propagation---each agent consumes the previous
+agent's output---compounded by increasing label subjectivity, since
+uncertainty ground truth requires a judgement call that claim identification
+does not ($\kappa = 0.71$ versus $0.78$).
+
+%----------------------------- Figure 2 ------------------------------
+\begin{figure}[!t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\columnwidth, height=5.2cm,
+  ybar=1.2pt,
+  bar width=6pt,
+  enlarge x limits=0.18,
+  ymin=70, ymax=100,
+  ylabel={Score (\%)},
+  ylabel style={font=\footnotesize},
+  symbolic x coords={Accuracy, Precision, Recall, F1},
+  xtick=data,
+  tick label style={font=\footnotesize},
+  legend style={font=\footnotesize, at={(0.5,-0.18)}, anchor=north,
+                legend columns=3, draw=none},
+  ymajorgrids=true, grid style={dashed, gray!30},
+]
+\addplot[fill=blue!35, draw=blue!60!black]
+  coordinates {(Accuracy,78.5) (Precision,75.2) (Recall,73.8) (F1,74.5)};
+\addplot[fill=orange!45, draw=orange!70!black]
+  coordinates {(Accuracy,85.9) (Precision,83.6) (Recall,81.7) (F1,82.6)};
+\addplot[fill=green!40!black!60, draw=green!30!black]
+  coordinates {(Accuracy,92.7) (Precision,90.5) (Recall,89.1) (F1,89.8)};
+\legend{LLM Only, RAG, Proposed}
+\end{axis}
+\end{tikzpicture}
+\caption{Accuracy, Precision, Recall, and F1 for the three systems. The
+proposed system achieves the highest score on all four metrics.}
+\label{fig:chart}
+\end{figure}
+
+\subsection{Ablation Study}
+Table~\ref{tab:ablation} isolates the contribution of the two main structural
+novelties: graph-based clustering and the multi-agent decomposition. Removing
+graph clustering drops accuracy to 84.3\%, as agents receive heterogeneous
+document sets that mix unrelated subtopics. Replacing the five agents with a
+single LLM pass (while retaining clustering) drops accuracy further to 80.1\%.
+The full system at 92.7\% confirms that both components are necessary and
+complementary: neither ablated configuration recovers the RAG baseline plus
+half the total gain, indicating that clustering supplies the clean input on
+which scoped agents are effective rather than contributing an independent
+additive increment. Configuration-level ablation is an established means of
+quantifying what agent decomposition costs and buys; a comparable study of
+memory configurations in a single-LLM multi-agent system reports that the
+choice of configuration shifts token consumption substantially while affecting
+wall-clock time only modestly~\cite{matilla2026memory}, consistent with the
+latency behaviour observed here.
+
+\subsection{Performance Chart}
+Fig.~\ref{fig:chart} visualises the main comparison across four key metrics.
+
+%=====================================================================
+\section{Discussion}
+The accuracy gain from 85.9\% to 92.7\% over the RAG baseline shows that
+retrieval alone is not enough. The two structural additions, graph clustering
+and multi-agent reasoning, each reduce a distinct source of error. Clustering
+removes the topical noise that arises when a flat ranked list mixes papers
+from different subtopics; agents with a focused cluster produce cleaner, more
+precise outputs than agents presented with heterogeneous document sets.
+
+The multi-agent structure improves interpretability as well as accuracy. A
+single-pass LLM tends to merge findings into a unified narrative, hiding
+disagreements. Because Agent~4 is explicitly tasked with contradiction
+detection, those disagreements are preserved and highlighted rather than
+smoothed over. This is particularly valuable for researchers trying to
+understand which aspects of a topic are contested.
+
+Evidence scoring via Equation~(\ref{eq:score}) measurably reduces the
+influence of weak studies. In preliminary trials without the $\mathrm{rel}(e)$
+term, poorly cited papers with high topical alignment sometimes dominated the
+ranked claim list. Adding source reliability as a second factor corrected
+this.
+
+The latency increase from 1.8~s (RAG) to 2.3~s (proposed) is modest, around
+28\%. Given that concurrent agent execution is used, the overhead comes mainly
+from aggregation and JSON parsing rather than from sequential LLM calls; a
+serial implementation would instead scale with the number of agents.
+
+\subsection{Error Analysis}
+Some errors arise when abstracts lack explicit declarative claims or when
+terminology varies significantly across papers in the same cluster. In such
+cases, Agent~1 may miss implicit conclusions, reducing claim recall.
+Clustering quality also degrades when retrieved papers span highly
+interdisciplinary topics, occasionally grouping loosely related works into the
+same cluster. Agent~4 agreement detection is most prone to error when claims
+from different papers address the same concept using different vocabulary,
+causing apparently contradictory labels on statements that are in fact
+consistent. All three failure modes trace back to the embedding space rather
+than to the agent prompts, which is why improved domain-specific
+embeddings~\cite{beltagy2019scibert},~\cite{cohan2020specter} and richer
+prompt context are the most promising single intervention.
+
+%=====================================================================
+\section{Conclusion}
+We have presented a multi-agent generative AI system for scientific literature
+analysis that combines retrieval, graph-based clustering, and a five-agent
+ensemble to produce structured, evidence-grounded reports. The pipeline
+addresses two core weaknesses of current approaches: the factual staleness of
+standalone LLMs, and the lack of structured multi-perspective synthesis in
+conventional RAG systems. Key technical contributions include the similarity
+graph and clustering step, the five-agent decomposition that mirrors the
+natural workflow of scientific review, and the composite
+$\mathrm{Score}(c,e)$ function that weights evidence by both semantic
+alignment and source reliability. An ablation study confirms that both the
+clustering and the multi-agent design contribute independently to the 92.7\%
+accuracy of the full system.
+
+Several constraints bound these results. The evaluation covers five topics and
+800 annotated documents, and the reported figures are single-run aggregates
+over that benchmark; per-topic variance and repeated runs were not measured,
+which is the principal threat to validity. Agent reliability assessments
+derive from abstract-level signals alone, since full-text access is not
+universally available without institutional subscriptions, and graph
+construction assumes that cosine similarity in the Sentence-BERT embedding
+space reflects thematic relatedness---an assumption that holds within a domain
+but weakens for interdisciplinary queries, where $\tau$ must be retuned. The
+system also depends on scholarly database APIs, so coverage is bounded by what
+those databases index and changes to their rate limits or response formats
+require maintenance of the retrieval module. Future directions therefore
+include full-text and domain-adapted retrieval for richer reliability
+assessment, a broader evaluation with per-split and multi-run reporting, and a
+user-facing interface that renders the structured output in an accessible
+form.
+
+%=====================================================================
+% References are kept inline so that the numbering [1]-[17] matches the
+% source paper exactly and a single pdfLaTeX pass suffices.
+% To switch to BibTeX instead, comment out the block below and uncomment:
+%   \bibliographystyle{IEEEtran}
+%   \bibliography{references}
+%=====================================================================
+\begin{thebibliography}{99}
+\bibitem{lewis2020rag}
+P. Lewis \emph{et al.}, ``Retrieval-augmented generation for
+knowledge-intensive NLP tasks,'' \emph{Adv. Neural Inf. Process. Syst.},
+vol.~33, pp. 9459--9474, 2020.
+
+\bibitem{beltagy2019scibert}
+I. Beltagy, K. Lo, and A. Cohan, ``SciBERT: A pretrained language model for
+scientific text,'' in \emph{Proc. EMNLP}, 2019, pp. 3615--3620.
+
+\bibitem{cohan2020specter}
+A. Cohan \emph{et al.}, ``SPECTER: Document-level representation learning using
+citation-informed transformers,'' in \emph{Proc. ACL}, 2020, pp. 2270--2282.
+
+\bibitem{blondel2008louvain}
+V. D. Blondel, J.-L. Guillaume, R. Lambiotte, and E. Lefebvre, ``Fast unfolding
+of communities in large networks,'' \emph{J. Stat. Mech.: Theory Exp.},
+vol.~2008, p. P10008, 2008.
+
+\bibitem{park2023generative}
+J. S. Park \emph{et al.}, ``Generative agents: Interactive simulacra of human
+behavior,'' in \emph{Proc. ACM UIST}, 2023, pp. 1--22.
+
+\bibitem{guo2024survey}
+T. Guo \emph{et al.}, ``Large language model based multi-agents: A survey of
+progress and challenges,'' in \emph{Proc. IJCAI}, 2024, pp. 8048--8057.
+
+\bibitem{reimers2019sbert}
+N. Reimers and I. Gurevych, ``Sentence-BERT: Sentence embeddings using siamese
+BERT-networks,'' in \emph{Proc. EMNLP}, 2019, pp. 3982--3992.
+
+\bibitem{zhao2024ragsurvey}
+P. Zhao \emph{et al.}, ``Retrieval-augmented generation for AI-generated
+content: A survey,'' arXiv:2402.19473, 2024.
+
+\bibitem{wu2023autogen}
+Q. Wu \emph{et al.}, ``AutoGen: Enabling next-gen LLM applications via
+multi-agent conversation,'' arXiv:2308.08155, 2023.
+
+\bibitem{moura2024crewai}
+J. Moura, ``CrewAI: Framework for orchestrating role-playing, autonomous AI
+agents,'' GitHub repository, 2024. [Online]. Available:
+https://github.com/crewAIInc/crewAI
+
+\bibitem{sun2025debate}
+X. Sun, J. Li, Y. Zhong, D. Zhao, and R. Yan, ``Towards detecting LLMs
+hallucination via Markov chain-based multi-agent debate framework,'' in
+\emph{Proc. IEEE Int. Conf. Acoust., Speech Signal Process. (ICASSP)}, 2025,
+pp. 1--5.
+
+\bibitem{singh2025agenticrag}
+A. Singh, A. Ehtesham, S. Kumar, and T. T. Khoei, ``Agentic
+retrieval-augmented generation: A survey on agentic RAG,'' arXiv:2501.09136,
+2025.
+
+\bibitem{ghareeb2026robin}
+A. E. Ghareeb \emph{et al.}, ``A multi-agent system for automating scientific
+discovery,'' \emph{Nature}, vol.~655, no.~8122, pp. 497--505, 2026.
+
+\bibitem{zhou2026mass}
+H. Zhou \emph{et al.}, ``Multi-agent design: Optimizing agents with better
+prompts and topologies,'' in \emph{Proc. Int. Conf. Learn. Represent. (ICLR)},
+2026.
+
+\bibitem{zhu2026orchestration}
+Y. Zhu, L. Liu, J. Yu, and D. Zhang, ``LLM-based multi-agent orchestration: A
+survey of frameworks, communication protocols, and emerging patterns,''
+\emph{Future Internet}, vol.~18, no.~6, p.~326, 2026.
+
+\bibitem{wang2026ioa}
+Y. Wang \emph{et al.}, ``Internet of agents: Fundamentals, applications, and
+challenges,'' \emph{IEEE Trans. Cogn. Commun. Netw.}, vol.~12, pp.
+4476--4501, 2026.
+
+\bibitem{matilla2026memory}
+A. Matilla-Molina, J. Dodero, and A. Mu\~{n}oz, ``Multi-agent educational
+system with a single large language model: An ablation study of memory
+configurations and efficiency,'' in \emph{Proc. 22nd IEEE Int. Conf. Intell.
+Environ. (IE)}, 2026, pp. 1--8.
+\end{thebibliography}
+
+\end{document}

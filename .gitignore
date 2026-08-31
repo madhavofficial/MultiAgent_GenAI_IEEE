@@ -1,0 +1,36 @@
+# LaTeX auxiliary and build files
+*.aux
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.synctex(busy)
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.nav
+*.snm
+*.vrb
+*.upa
+*.upb
+*.bcf
+*.run.xml
+*.dvi
+*.xdv
+*.fmt
+*.fot
+*.cb
+*.cb2
+._*
+__MACOSX/
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# LaTeX Workshop output directory (if configured)
+out/
+build/
