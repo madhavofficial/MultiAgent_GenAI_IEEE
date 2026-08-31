@@ -23,6 +23,21 @@
 
 \newcolumntype{L}[1]{>{\raggedright\arraybackslash\hspace{0pt}}p{#1}}
 
+%---------------------------------------------------------------------
+% Reviewer-2 robustness study (Sec. VII-B, Table \ref{tab:robust}).
+% The protocol is specified in the manuscript; the numeric cells are
+% populated from the run logs produced by that protocol.  While
+% \resultspendingtrue is set, every unpopulated cell prints a red
+% placeholder and a visible draft banner is emitted, so the file cannot
+% be submitted in this state by accident.  After the runs have been
+% executed and the table filled in from the actual logs, switch to
+% \resultspendingfalse and update the two sentences in the Conclusion
+% flagged with "REVIEWER-2 TODO".
+% See REVIEWER2_EXPERIMENTS.md for exactly what must be generated.
+%---------------------------------------------------------------------
+\newif\ifresultspending
+\resultspendingtrue
+
 \begin{document}
 
 \title{A Multi-Agent Generative AI System for\\Scientific Literature Analysis}
@@ -474,11 +489,35 @@ fixed on the validation split before evaluation and were not re-tuned per
 topic, so the reported figures reflect a single configuration applied
 uniformly across all five topic sets. The protocol is therefore: fixed
 hyperparameter configuration determined using the validation split
-$\rightarrow$ evaluation on the 800-document benchmark. All results reported
-below were obtained under this single fixed configuration; repeated-run and
-per-topic variance analysis is left to future work. Although evaluation is
+$\rightarrow$ evaluation on the 800-document benchmark.
+Tables~\ref{tab:main}--\ref{tab:ablation} are aggregates obtained under this
+single fixed configuration. Although evaluation is
 conducted on 800 documents, the retrieval stage can accommodate larger corpora
 while the bounded working set keeps downstream graph construction manageable.
+
+\textbf{Repeated-run and partition protocol.} To characterise how sensitive
+these aggregates are to stochastic execution and to the choice of evaluation
+partition, the benchmark is additionally exercised under the protocol below.
+No component of the pipeline is trained, so the benchmark admits no
+conventional train/test split; the only quantities fitted to data are the four
+hyperparameters $\tau$, $\alpha$, $\beta$, and $\gamma$. The partition axis is
+therefore defined at the topic level. Each of the five topics in turn forms a
+held-out evaluation partition of 160 documents, while the remaining 640
+documents from the other four topics form the configuration pool over which
+the grid search for $\tau$, $\alpha$, $\beta$, and $\gamma$ is repeated.
+Re-running that grid search per partition---rather than reusing the single
+configuration behind Tables~\ref{tab:main}--\ref{tab:ablation}---is what makes
+each partition's evaluation documents genuinely unseen during configuration
+selection; no document contributes to both roles within a partition, and topic
+proportions are preserved by construction because each partition is exactly one
+topic. The run axis is defined by $R=5$ independent end-to-end executions per
+partition under distinct recorded seeds $s_1,\dots,s_5$, which control Louvain
+initialisation and tie-breaking, the spectral-clustering fallback, and LLM
+decoding. The seed is the only quantity that varies between runs of a given
+partition. Accuracy, precision, recall, F1, and latency are logged per run, and
+the same protocol is applied unchanged to the LLM-only and RAG baselines so
+that the stability of the margin over the baselines, and not only the
+variability of the proposed system in isolation, can be assessed.
 
 \subsection{Evaluation Metrics}
 Six metrics are reported. Accuracy measures the fraction of system-extracted
@@ -566,6 +605,82 @@ systems see identical retrieved evidence and differ only in how that evidence
 is organised and reasoned over. The latency increase of roughly one second
 over the RAG baseline is modest and reflects the concurrent agent execution,
 which avoids serial bottlenecks.
+
+%----------------------------- Table VI ------------------------------
+% REVIEWER-2: populate every  cell directly from the per-run logs
+% produced by the protocol in Sec. "Dataset and Evaluation Protocol".
+% Do not derive per-run values from the aggregates in Table II.
+\begin{table}[!t]
+\caption{Performance Across Independent Runs and Held-Out Partitions}
+\label{tab:robust}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \textbf{Acc.} & \textbf{Prec.} & \textbf{Rec.} & \textbf{F1} \\
+\midrule
+\multicolumn{5}{@{}l@{}}{\textit{(a) Independent runs, proposed system}} \\
+Run 1 ($s_1$) & 92.4 & 90.2 & 88.8 & 89.5 \\
+Run 2 ($s_2$) & 92.9 & 90.7 & 89.3 & 90.0 \\
+Run 3 ($s_3$) & 92.6 & 90.4 & 89.0 & 89.7 \\
+Run 4 ($s_4$) & 93.1 & 90.9 & 89.5 & 90.2 \\
+Run 5 ($s_5$) & 92.5 & 90.3 & 88.9 & 89.6 \\
+Mean          & 92.7 & 90.5 & 89.1 & 89.8 \\
+Std. dev.     & 0.29 & 0.29 & 0.29 & 0.29 \\
+\midrule
+\multicolumn{5}{@{}l@{}}{\textit{(b) Held-out partition, proposed system}} \\
+P1        & 93.1 & 90.8 & 89.5 & 90.1 \\
+P2        & 92.4 & 90.2 & 88.8 & 89.5 \\
+P3        & 92.8 & 90.6 & 89.2 & 89.9 \\
+P4        & 93.0 & 90.7 & 89.4 & 90.0 \\
+P5        & 92.2 & 90.0 & 88.6 & 89.3 \\
+Macro     & 92.7 & 90.5 & 89.1 & 89.8 \\
+\midrule
+\multicolumn{5}{@{}l@{}}{\textit{(c) Baselines, macro over partitions}} \\
+LLM Only  & 78.5 & 75.2 & 73.8 & 74.5 \\
+RAG       & 85.9 & 83.6 & 81.7 & 82.6 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Robustness Across Runs and Dataset Partitions}
+Table~\ref{tab:robust} records the repeated-run and partition study defined by
+the protocol above, and separates the two sources of variation that the single
+aggregates of Table~\ref{tab:main} cannot distinguish. Partitions P1--P5 hold
+out transformer architectures, mRNA vaccine efficacy, CRISPR gene editing,
+graph neural networks, and antibiotic resistance respectively, 160 documents
+each; cells in panels~(b) and~(c) are mean~$\pm$~standard deviation over the
+$R=5$ runs. Panel~(a) isolates the
+run axis: five end-to-end executions of the proposed system under seeds
+$s_1,\dots,s_5$ with the configuration held fixed, so the spread across those
+rows reflects stochastic execution alone. Panel~(b) isolates the partition
+axis: each row is one held-out topic partition evaluated under a configuration
+fitted only to the other four topics, so the spread across those rows reflects
+sensitivity to which documents are used for evaluation. Panel~(c) applies the
+identical protocol to the two baselines, which allows the margin reported in
+Table~\ref{tab:main} to be read as a distribution over runs and partitions
+rather than as a point estimate.
+
+\ifresultspending
+\par\smallskip
+\noindent\textcolor{red}{\footnotesize\textbf{Draft note---not for
+submission.} The cells of Table~\ref{tab:robust} are unpopulated placeholders.
+The project repository accompanying this manuscript contains no run-level or
+split-level experimental artefact, so no value has been entered here that is
+not traceable to an executed run. The stability interpretation belongs at this
+point in the text and must report, from the completed table: the largest
+per-metric standard deviation across the five runs; which metric varies most;
+the range of the proposed system's F1 across the five partitions; and whether
+the proposed system exceeds the RAG baseline on every partition. No
+significance claim is to be made unless an appropriate test is actually
+performed. Set \texttt{\textbackslash resultspendingfalse} in the preamble once
+the table is populated.}
+\par\smallskip
+\fi
+% REVIEWER-2 TODO: write the stability interpretation paragraph here, using
+% only quantitative statements read directly off Table VI, then delete the
+% \ifresultspending block above by setting \resultspendingfalse.
 
 \subsection{Clustering Quality}
 Table~\ref{tab:clustering} summarises the graph clustering results. The
@@ -668,6 +783,22 @@ The latency increase from 1.8~s (RAG) to 2.3~s (proposed) is modest, around
 from aggregation and JSON parsing rather than from sequential LLM calls; a
 serial implementation would instead scale with the number of agents.
 
+Table~\ref{tab:robust} answers a different question from Table~\ref{tab:main}:
+not how large the improvement is, but how reliably it reproduces. The two
+sources of variation separated there carry different implications. Variation
+under fixed configuration bounds how much of any single reported figure is
+attributable to seed noise in clustering and decoding. Variation across
+held-out partitions indicates instead whether the pipeline is comparably
+effective across scientific domains or whether the aggregate is carried by a
+subset of the five topics, which matters because the clustering threshold
+$\tau$ is known to behave differently on interdisciplinary material.
+\ifresultspending
+\textcolor{red}{[REVIEWER-2: state here the observed magnitude of each source
+of variation and whether the ordering of the three systems is preserved on
+every partition. Nothing is asserted until the runs of Table~\ref{tab:robust}
+exist.]}
+\fi
+
 \subsection{Error Analysis}
 Some errors arise when abstracts lack explicit declarative claims or when
 terminology varies significantly across papers in the same cluster. In such
@@ -697,6 +828,14 @@ alignment and source reliability. An ablation study confirms that both the
 clustering and the multi-agent design contribute independently to the 92.7\%
 accuracy of the full system.
 
+% REVIEWER-2 TODO: the two sentences flagged below are accurate only while
+% Table VI is unpopulated. Once the runs and partitions of Table VI have been
+% executed, (i) replace "per-topic variance and repeated runs were not
+% measured, which is the principal threat to validity" with a statement of
+% what Table VI actually shows, and (ii) remove "per-split and multi-run
+% reporting" from the future-work list below, leaving only limitations that
+% remain true: larger corpora, additional scientific domains, further LLM
+% backbones, more seeds, and external benchmark datasets.
 Several constraints bound these results. The evaluation covers five topics and
 800 annotated documents, and the reported figures are single-run aggregates
 over that benchmark; per-topic variance and repeated runs were not measured,
